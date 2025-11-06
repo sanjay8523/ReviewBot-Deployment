@@ -1,4 +1,5 @@
 const { Octokit } = require("@octokit/rest");
+const { createAppAuth } = require("@octokit/auth-app"); // NEW Import
 const { parseDiff } = require("./utils/diffParser");
 const { analyzeStaticIssues } = require("./analyzers/staticAnalyzer");
 const { analyzeSecurityIssues } = require("./analyzers/securityAnalyzer");
@@ -6,17 +7,48 @@ const { analyzeComplexity } = require("./analyzers/complexityAnalyzer");
 const { performAIReview } = require("./analyzers/aiReviewer");
 const { calculateScore } = require("./utils/scoring");
 
-const octokit = new Octokit({
-  auth: process.env.GITHUB_TOKEN,
-});
+// --- Centralized Octokit Initialization for App Authentication ---
+
+// Function to generate a time-limited Octokit client for the specific repository
+async function getInstallationOctokit(installationId) {
+  let privateKey = process.env.GITHUB_PRIVATE_KEY;
+
+  // NOTE: GITHUB_PRIVATE_KEY contains the contents of the .pem file, passed via Railway's environment variable.
+
+  if (!privateKey || !process.env.GITHUB_APP_ID) {
+    throw new Error(
+      "GitHub App credentials (APP_ID or PRIVATE_KEY) are missing. Cannot authenticate."
+    );
+  }
+
+  const auth = createAppAuth({
+    appId: process.env.GITHUB_APP_ID,
+    privateKey: privateKey,
+    installationId: installationId,
+  });
+
+  const installationAuthentication = await auth({ type: "installation" });
+
+  return new Octokit({
+    auth: installationAuthentication.token,
+  });
+}
+
+// --- Main Handler Function ---
 
 async function handlePullRequestEvent(payload) {
   const { repository, pull_request } = payload;
   const owner = repository.owner.login;
   const repo = repository.name;
   const prNumber = pull_request.number;
+  // CRUCIAL: Get the ID of the installation that triggered the event
+  const installationId = payload.installation.id;
+
+  // Initialize Octokit using the installation ID to get the necessary permissions
+  const octokit = await getInstallationOctokit(installationId);
 
   console.log(`\n📊 Analyzing PR #${prNumber} in ${owner}/${repo}`);
+  console.log(`🔗 ${pull_request.html_url}`);
 
   try {
     // Step 1: Get PR diff
@@ -37,7 +69,7 @@ async function handlePullRequestEvent(payload) {
     // Step 3: Get file contents for analysis
     const filesWithContent = await Promise.all(
       changedFiles.map(async (file) => {
-        if (file.additions > 500) return { ...file, content: null }; // Skip huge files
+        if (file.additions > 500) return { ...file, content: null };
 
         try {
           const { data } = await octokit.repos.getContent({
@@ -79,6 +111,7 @@ async function handlePullRequestEvent(payload) {
     // Step 6: Post review comments (Inline)
     if (allIssues.length > 0) {
       await postReviewComments(
+        octokit,
         owner,
         repo,
         prNumber,
@@ -89,7 +122,8 @@ async function handlePullRequestEvent(payload) {
 
     // Step 7: Post summary comment
     const score = calculateScore(allIssues, reviewableFiles);
-    await postSummaryComment(owner, repo, prNumber, allIssues, score);
+    // Note: The PUBLIC_LINK environment variable should be set to your GitHub App's installation link
+    await postSummaryComment(octokit, owner, repo, prNumber, allIssues, score);
 
     console.log("✅ Review completed successfully!");
   } catch (error) {
@@ -107,9 +141,18 @@ async function handlePullRequestEvent(payload) {
   }
 }
 
-// --- Helper Functions for GitHub Comments ---
+// NOTE: The utility functions (postReviewComments, postSummaryComment, formatIssueComment,
+// getScoreEmoji, getTopConcerns, getRecommendation) remain the same except that
+// postSummaryComment now references the PUBLIC_LINK env variable.
 
-async function postReviewComments(owner, repo, prNumber, commitSha, issues) {
+async function postReviewComments(
+  octokit,
+  owner,
+  repo,
+  prNumber,
+  commitSha,
+  issues
+) {
   const comments = issues
     .filter((issue) => issue.line && issue.path)
     .map((issue) => ({
@@ -140,7 +183,14 @@ async function postReviewComments(owner, repo, prNumber, commitSha, issues) {
   }
 }
 
-async function postSummaryComment(owner, repo, prNumber, issues, score) {
+async function postSummaryComment(
+  octokit,
+  owner,
+  repo,
+  prNumber,
+  issues,
+  score
+) {
   const critical = issues.filter((i) => i.severity === "critical").length;
   const high = issues.filter((i) => i.severity === "high").length;
   const medium = issues.filter((i) => i.severity === "medium").length;
@@ -154,6 +204,13 @@ async function postSummaryComment(owner, repo, prNumber, issues, score) {
       : medium > 0
       ? "🟡 LOW"
       : "🟢 MINIMAL";
+
+  // Use the public GitHub App link for the footer
+  const publicLink =
+    process.env.PUBLIC_LINK ||
+    `https://github.com/apps/${
+      process.env.GITHUB_APP_NAME || "sanjay-reviewbot"
+    }`;
 
   const summary = `
 ## 🤖 ReviewBot Analysis Summary
@@ -175,7 +232,7 @@ ${getTopConcerns(issues)}
 ${getRecommendation(score, critical, high)}
 
 ---
-<sub>🤖 Powered by ReviewBot</sub>
+<sub>🤖 Powered by [Sanjay-ReviewBot](${publicLink})</sub>
   `.trim();
 
   try {

@@ -1,6 +1,8 @@
 require("dotenv").config();
 const express = require("express");
 const crypto = require("crypto");
+const fs = require("fs"); // Added fs to read the private key locally
+const path = require("path"); // Added path
 const { handlePullRequestEvent } = require("./webhookHandler");
 
 const app = express();
@@ -11,12 +13,8 @@ function verifyGitHubSignature(req, res, next) {
   const signature = req.headers["x-hub-signature-256"];
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
 
-  // NOTE: A robust signature check requires the raw body, which is lost by express.json().
-  // For simplicity in this tutorial, we use JSON.stringify(req.body).
-  // If verification fails in a real setup, this is the most likely culprit.
   if (!signature || !secret) {
     console.log("⚠️ Missing signature or secret");
-    // Allow to pass for local testing if the secret isn't set
     if (process.env.NODE_ENV === "development") return next();
     return res.status(401).send("Unauthorized");
   }
@@ -58,19 +56,16 @@ app.post("/webhook", verifyGitHubSignature, async (req, res) => {
 
   console.log(`\n📬 Received GitHub event: ${event}`);
 
-  // Acknowledge receipt immediately (GitHub requires this within 30s)
   res.status(200).send("Webhook received");
 
   try {
     if (event === "pull_request") {
       const action = payload.action;
 
-      // Only process opened, reopened, and synchronize (new commits)
       if (["opened", "reopened", "synchronize"].includes(action)) {
         console.log(
           `🔍 Processing PR #${payload.pull_request.number} (${action})`
         );
-        // Do not await to free up the webhook response instantly
         handlePullRequestEvent(payload).catch((error) => {
           console.error("❌ Error processing PR in background:", error);
         });
@@ -79,6 +74,11 @@ app.post("/webhook", verifyGitHubSignature, async (req, res) => {
       }
     } else if (event === "ping") {
       console.log("🏓 Ping received - webhook is configured correctly!");
+    } else if (
+      event === "installation" ||
+      event === "installation_repositories"
+    ) {
+      console.log(`🔧 Installation event received: ${event}`);
     } else {
       console.log(`⏭️ Ignoring event: ${event}`);
     }
@@ -95,6 +95,17 @@ app.use((err, req, res, next) => {
 
 // Start server
 app.listen(PORT, () => {
+  // Check for GITHUB_PRIVATE_KEY setup
+  const isKeySet =
+    process.env.GITHUB_PRIVATE_KEY ||
+    (process.env.GITHUB_PRIVATE_KEY_PATH &&
+      fs.existsSync(process.env.GITHUB_PRIVATE_KEY_PATH));
+  const authMethod = isKeySet
+    ? "✅ GitHub App"
+    : process.env.GITHUB_TOKEN
+    ? "⚠️ Personal Token"
+    : "❌ Missing Auth";
+
   console.log(`
 ╔═══════════════════════════════════════╗
 ║      🤖 ReviewBot is ONLINE! 🚀       ║
@@ -106,7 +117,7 @@ app.listen(PORT, () => {
 
 Environment:
   • Node: ${process.version}
-  • GitHub Token: ${process.env.GITHUB_TOKEN ? "✅ Set" : "❌ Missing"}
+  • Auth Method: ${authMethod}
   • Groq API Key: ${process.env.GROQ_API_KEY ? "✅ Set" : "❌ Missing"}
   • Webhook Secret: ${
     process.env.GITHUB_WEBHOOK_SECRET ? "✅ Set" : "❌ Missing"
