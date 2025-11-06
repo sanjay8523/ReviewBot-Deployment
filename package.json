@@ -1,0 +1,30 @@
+{
+  "name": "reviewbot",
+  "version": "1.0.0",
+  "description": "AI-powered GitHub code review bot using Groq",
+  "main": "backend/server.js",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "nodemon backend/server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "github",
+    "code-review",
+    "ai",
+    "groq"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "@octokit/rest": "^20.0.2",
+    "groq-sdk": "^0.3.2",
+    "eslint": "^8.56.0",
+    "parse-diff": "^0.11.1",
+    "js-yaml": "^4.1.0",
+    "crypto": "^1.0.1",
+    "nodemon": "^3.0.2"
+  }
+}
